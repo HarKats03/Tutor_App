@@ -5,6 +5,7 @@ import pandas as pd
 import os
 import platform
 import calendar
+import shutil
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from PIL import Image, ImageDraw, ImageTk
 
@@ -13,7 +14,7 @@ if platform.system() == 'Windows':
     import ctypes
 
     try:
-        app_id = 'tutor.manager.pro.final.v5'
+        app_id = 'tutor.manager.pro.final.v6'
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
         pass
@@ -72,22 +73,27 @@ def show_custom_alert(parent, title, message, is_error=False, callback=None):
     ctk.CTkButton(dialog, text="ΟΚ", fg_color=btn_color, width=120, command=on_click).pack(pady=15)
 
 
-# --- 3. ΒΑΣΗ ΔΕΔΟΜΕΝΩΝ ---
+# --- 3. ΒΑΣΗ ΔΕΔΟΜΕΝΩΝ (Αναβαθμισμένη) ---
 def init_db():
-    conn = sqlite3.connect("tutor_manager.db")
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS students (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, 
-                        group_name TEXT, rate_per_hour REAL NOT NULL, hours_per_session REAL NOT NULL)''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS schedule (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, 
-                        day_of_week TEXT NOT NULL, FOREIGN KEY(student_id) REFERENCES students(id))''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS session_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, 
-                        date TEXT NOT NULL, hours_done REAL NOT NULL, earned_amount REAL NOT NULL, 
-                        FOREIGN KEY(student_id) REFERENCES students(id))''')
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("tutor_manager.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS students (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, 
+                            group_name TEXT, rate_per_hour REAL NOT NULL, hours_per_session REAL NOT NULL)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS schedule (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, 
+                            day_of_week TEXT NOT NULL, FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE)''')
+        cursor.execute('''CREATE TABLE IF NOT EXISTS session_logs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT, student_id INTEGER, 
+                            date TEXT NOT NULL, hours_done REAL NOT NULL, earned_amount REAL NOT NULL, 
+                            FOREIGN KEY(student_id) REFERENCES students(id) ON DELETE CASCADE)''')
+
+        try:
+            cursor.execute("ALTER TABLE session_logs ADD COLUMN notes TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+
+        conn.commit()
 
 
 # --- 4. Η ΚΥΡΙΑ ΕΦΑΡΜΟΓΗ ---
@@ -95,13 +101,11 @@ class TutorApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # ====== ΤΟ ΜΥΣΤΙΚΟ ΓΙΑ ΝΑ ΜΗΝ ΕΧΟΥΜΕ FLICKERING ΟΥΤΕ ERRORS ======
-        # Κάνουμε την εφαρμογή 100% αόρατη κατά τη φόρτωση του UI!
         self.attributes("-alpha", 0.0)
         self.withdraw()
 
-        self.title("Tutor Manager Pro")
-        self.geometry("1300x850")
+        self.title("Tutor Manager Pro+")
+        self.geometry("1400x850")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         apply_window_icon(self)
@@ -114,45 +118,61 @@ class TutorApp(ctk.CTk):
         self.logo_img = ctk.CTkImage(Image.open("logo.png"), size=(80, 80))
 
         # --- Sidebar ---
-        self.sidebar = ctk.CTkFrame(self, width=250, corner_radius=0, fg_color="#1a1c23")
+        self.sidebar = ctk.CTkFrame(self, width=260, corner_radius=0, fg_color="#1a1c23")
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         ctk.CTkLabel(self.sidebar, text="", image=self.logo_img).pack(pady=(30, 10))
-        ctk.CTkLabel(self.sidebar, text="TutorManager", font=("Montserrat", 20, "bold"), text_color="#0A84FF").pack(
-            pady=(0, 30))
+        ctk.CTkLabel(self.sidebar, text="TutorManager Pro+", font=("Montserrat", 20, "bold"),
+                     text_color="#0A84FF").pack(pady=(0, 30))
 
-        self.btn_calendar = ctk.CTkButton(self.sidebar, text="📅 Έλεγχος & Ημερολόγιο", font=("Arial", 15), height=45,
+        self.btn_calendar = ctk.CTkButton(self.sidebar, text="📅 Έλεγχος & Ημερολόγιο", font=("Arial", 14), height=40,
                                           fg_color="#2980b9", command=self.show_calendar_view)
-        self.btn_calendar.pack(pady=10, padx=20, fill="x")
+        self.btn_calendar.pack(pady=5, padx=20, fill="x")
 
-        self.btn_add_student = ctk.CTkButton(self.sidebar, text="👥 Προσθήκη / Πρόγραμμα", font=("Arial", 15), height=45,
+        self.btn_add_student = ctk.CTkButton(self.sidebar, text="➕ Προσθήκη Μαθητή", font=("Arial", 14), height=40,
                                              fg_color="#34495e", command=self.show_add_student_ui)
-        self.btn_add_student.pack(pady=10, padx=20, fill="x")
+        self.btn_add_student.pack(pady=5, padx=20, fill="x")
 
-        self.btn_export = ctk.CTkButton(self.sidebar, text="📊 Εξαγωγή Excel", font=("Arial", 15), height=45,
+        self.btn_manage_students = ctk.CTkButton(self.sidebar, text="👥 Λίστα & Διαχείριση", font=("Arial", 14),
+                                                 height=40,
+                                                 fg_color="#8e44ad", hover_color="#9b59b6",
+                                                 command=self.show_manage_students_ui)
+        self.btn_manage_students.pack(pady=5, padx=20, fill="x")
+
+        self.btn_export = ctk.CTkButton(self.sidebar, text="📊 Εξαγωγή Excel", font=("Arial", 14), height=40,
                                         fg_color="#27ae60", hover_color="#219150", command=self.export_excel)
-        self.btn_export.pack(pady=10, padx=20, fill="x")
+        self.btn_export.pack(pady=5, padx=20, fill="x")
+
+        self.btn_backup = ctk.CTkButton(self.sidebar, text="💾 Αποθήκευση Backup", font=("Arial", 14), height=35,
+                                        fg_color="#f39c12", hover_color="#e67e22", text_color="black",
+                                        command=self.create_backup)
+        self.btn_backup.pack(pady=(20, 5), padx=20, fill="x")
+
+        self.btn_restore = ctk.CTkButton(self.sidebar, text="🔄 Επαναφορά Δεδομένων", font=("Arial", 14), height=35,
+                                         fg_color="#d35400", hover_color="#e67e22", text_color="white",
+                                         command=self.restore_backup)
+        self.btn_restore.pack(pady=5, padx=20, fill="x")
 
         self.btn_summary = ctk.CTkButton(self.sidebar, text="✅ Κλείσιμο Ημέρας", font=("Arial", 15, "bold"), height=45,
-                                         fg_color="#d35400", hover_color="#e67e22", command=self.show_daily_summary)
-        self.btn_summary.pack(pady=40, padx=20, fill="x", side="bottom")
+                                         fg_color="#c0392b", hover_color="#e74c3c", command=self.show_daily_summary)
+        self.btn_summary.pack(pady=20, padx=20, fill="x", side="bottom")
 
+        # Frames
         self.calendar_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.add_student_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.manage_student_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
 
         self.setup_add_student_ui()
         self.show_calendar_view()
 
-        # --- Εκκίνηση Splash Screen ---
         self.show_splash()
 
-    # ==================== SPLASH SCREEN LOGIC ====================
+    # ==================== SPLASH SCREEN ====================
     def show_splash(self):
         self.splash = ctk.CTkToplevel(self)
         self.splash.title("Φόρτωση...")
         self.splash.geometry("450x300")
-        self.splash.overrideredirect(True)  # Χωρίς περίγραμμα παραθύρου
+        self.splash.overrideredirect(True)
 
-        # Κεντράρισμα Splash Screen
         self.splash.update_idletasks()
         x = (self.winfo_screenwidth() // 2) - (450 // 2)
         y = (self.winfo_screenheight() // 2) - (300 // 2)
@@ -161,37 +181,52 @@ class TutorApp(ctk.CTk):
         self.splash.configure(fg_color="#1a1c23")
         logo = ctk.CTkImage(Image.open("logo.png"), size=(100, 100))
         ctk.CTkLabel(self.splash, text="", image=logo).pack(pady=(40, 10))
-        ctk.CTkLabel(self.splash, text="TUTOR MANAGER PRO", font=("Montserrat", 22, "bold"),
+        ctk.CTkLabel(self.splash, text="TUTOR MANAGER PRO+", font=("Montserrat", 22, "bold"),
                      text_color="#0A84FF").pack()
 
         self.lbl_status = ctk.CTkLabel(self.splash, text="Εκκίνηση συστημάτων...", font=("Arial", 14),
                                        text_color="gray")
         self.lbl_status.pack(pady=20)
 
-        # Εξέλιξη φόρτωσης (δεν προκαλεί errors, γιατί ανήκει στο main loop του app)
-        self.after(5000, lambda: self.lbl_status.configure(text="Σύνδεση στη βάση δεδομένων..."))
-        self.after(8000, lambda: self.lbl_status.configure(text="Φόρτωση γραφικών..."))
-        self.after(12000, self.finish_splash)
+        self.after(1500, lambda: self.lbl_status.configure(text="Σύνδεση στη βάση δεδομένων..."))
+        self.after(3000, lambda: self.lbl_status.configure(text="Φόρτωση γραφικών..."))
+        self.after(4500, self.finish_splash)
 
     def finish_splash(self):
-        self.splash.destroy()  # Σκοτώνουμε το Loading screen
-
-        # Κεντράρουμε το κεντρικό παράθυρο πριν το εμφανίσουμε
+        self.splash.destroy()
         self.update_idletasks()
-        x = (self.winfo_screenwidth() // 2) - (1300 // 2)
+        x = (self.winfo_screenwidth() // 2) - (1400 // 2)
         y = (self.winfo_screenheight() // 2) - (850 // 2)
         self.geometry(f"+{x}+{y}")
-
-        self.deiconify()  # Εμφανίζει το παράθυρο
-        self.attributes("-alpha", 1.0)  # Το κάνει 100% ορατό (Σπάει την αορατότητα)
-
-    # ==============================================================
+        self.deiconify()
+        self.attributes("-alpha", 1.0)
 
     def hide_all_frames(self):
         self.calendar_frame.grid_forget()
         self.add_student_frame.grid_forget()
+        self.manage_student_frame.grid_forget()
 
-    # ==================== ΟΘΟΝΗ ΗΜΕΡΟΛΟΓΙΟΥ & ΗΜΕΡΗΣΙΟΥ ΕΛΕΓΧΟΥ ====================
+    # ==================== BACKUP & RESTORE ΛΕΙΤΟΥΡΓΙΑ ====================
+    def create_backup(self):
+        try:
+            shutil.copy("tutor_manager.db", "tutor_manager_backup.db")
+            show_custom_alert(self, "Backup Επιτυχές", "Το αντίγραφο ασφαλείας ανανεώθηκε επιτυχώς!")
+        except Exception as e:
+            show_custom_alert(self, "Σφάλμα Backup", str(e), is_error=True)
+
+    def restore_backup(self):
+        if not os.path.exists("tutor_manager_backup.db"):
+            show_custom_alert(self, "Προσοχή", "Δεν βρέθηκε προηγούμενο αρχείο backup για επαναφορά.", is_error=True)
+            return
+
+        try:
+            shutil.copy("tutor_manager_backup.db", "tutor_manager.db")
+            show_custom_alert(self, "Επαναφορά Επιτυχής", "Η βάση δεδομένων ανανεώθηκε από το Backup!")
+            self.show_calendar_view()
+        except Exception as e:
+            show_custom_alert(self, "Σφάλμα Επαναφοράς", str(e), is_error=True)
+
+    # ==================== ΟΘΟΝΗ ΗΜΕΡΟΛΟΓΙΟΥ ====================
     def show_calendar_view(self):
         self.hide_all_frames()
         self.calendar_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
@@ -241,6 +276,8 @@ class TutorApp(ctk.CTk):
     def build_calendar_grid(self):
         for w in self.cal_grid_container.winfo_children(): w.destroy()
 
+        self.cal_buttons = {}
+
         year = int(self.combo_year.get())
         month = int(self.combo_month.get())
 
@@ -251,30 +288,35 @@ class TutorApp(ctk.CTk):
                                                                                                                  pady=5)
 
         cal_matrix = calendar.monthcalendar(year, month)
-        conn = sqlite3.connect("tutor_manager.db")
-        cursor = conn.cursor()
 
-        for r, week in enumerate(cal_matrix):
-            for c, day in enumerate(week):
-                if day != 0:
-                    date_str = f"{year}-{month:02d}-{day:02d}"
-                    cursor.execute("SELECT SUM(hours_done) FROM session_logs WHERE date=?", (date_str,))
-                    hours_sum = cursor.fetchone()[0]
+        with sqlite3.connect("tutor_manager.db") as conn:
+            cursor = conn.cursor()
+            for r, week in enumerate(cal_matrix):
+                for c, day in enumerate(week):
+                    if day != 0:
+                        date_str = f"{year}-{month:02d}-{day:02d}"
+                        cursor.execute("SELECT SUM(hours_done) FROM session_logs WHERE date=?", (date_str,))
+                        hours_sum = cursor.fetchone()[0]
 
-                    bg_color = "#27ae60" if hours_sum and hours_sum > 0 else "#2c3e50"
-                    is_today = (
-                                day == datetime.today().day and month == datetime.today().month and year == datetime.today().year)
-                    border = 2 if is_today else 0
-                    border_color = "#f1c40f" if is_today else None
+                        bg_color = "#27ae60" if hours_sum and hours_sum > 0 else "#2c3e50"
+                        is_today = (
+                                    day == datetime.today().day and month == datetime.today().month and year == datetime.today().year)
 
-                    text_display = f"{day}\n({hours_sum}h)" if hours_sum else str(day)
+                        border = 2 if is_today else 0
+                        border_color = "#f1c40f" if is_today else "gray"
 
-                    btn = ctk.CTkButton(self.cal_grid_container, text=text_display, width=50, height=50,
-                                        fg_color=bg_color, font=("Arial", 13, "bold"),
-                                        border_width=border, border_color=border_color,
-                                        command=lambda d=day, m=month, y=year: self.select_day(y, m, d))
-                    btn.grid(row=r + 1, column=c, padx=3, pady=3)
-        conn.close()
+                        text_display = f"{day}\n({hours_sum}h)" if hours_sum else str(day)
+
+                        btn = ctk.CTkButton(self.cal_grid_container, text=text_display, width=50, height=50,
+                                            fg_color=bg_color, font=("Arial", 13, "bold"),
+                                            border_width=border, border_color=border_color,
+                                            command=lambda d=day, m=month, y=year: self.select_day(y, m, d))
+                        btn.grid(row=r + 1, column=c, padx=3, pady=3)
+
+                        self.cal_buttons[date_str] = {"btn": btn, "is_today": is_today}
+
+        if hasattr(self, 'selected_date'):
+            self.highlight_selected_day()
 
     def select_day(self, year, month, day):
         self.selected_date = f"{year}-{month:02d}-{day:02d}"
@@ -286,59 +328,78 @@ class TutorApp(ctk.CTk):
         self.refresh_day_lists()
         self.setup_quick_add()
 
+        self.highlight_selected_day()
+
+    def highlight_selected_day(self):
+        if not hasattr(self, 'cal_buttons'): return
+
+        for d_str, data in self.cal_buttons.items():
+            btn = data["btn"]
+            is_today = data["is_today"]
+
+            if d_str == getattr(self, 'selected_date', ''):
+                btn.configure(border_width=3, border_color="#3498db")
+            else:
+                btn.configure(border_width=2 if is_today else 0, border_color="#f1c40f" if is_today else "gray")
+
     def refresh_day_lists(self):
         for w in self.scroll_area.winfo_children(): w.destroy()
 
-        conn = sqlite3.connect("tutor_manager.db")
-        cursor = conn.cursor()
+        with sqlite3.connect("tutor_manager.db") as conn:
+            cursor = conn.cursor()
+            ctk.CTkLabel(self.scroll_area, text="📋 Προγραμματισμένα για σήμερα:", font=("Arial", 16, "bold")).pack(
+                anchor="w", pady=(0, 5))
 
-        ctk.CTkLabel(self.scroll_area, text="📋 Προγραμματισμένα για σήμερα:", font=("Arial", 16, "bold")).pack(
-            anchor="w", pady=(0, 5))
+            cursor.execute('''SELECT s.id, s.name, s.group_name, s.rate_per_hour, s.hours_per_session 
+                              FROM students s JOIN schedule sch ON s.id = sch.student_id WHERE sch.day_of_week = ?''',
+                           (self.selected_day_name,))
+            scheduled_students = cursor.fetchall()
 
-        cursor.execute('''SELECT s.id, s.name, s.group_name, s.rate_per_hour, s.hours_per_session 
-                          FROM students s JOIN schedule sch ON s.id = sch.student_id WHERE sch.day_of_week = ?''',
-                       (self.selected_day_name,))
-        scheduled_students = cursor.fetchall()
+            scheduled_ids = []
 
-        scheduled_ids = []
+            if not scheduled_students:
+                ctk.CTkLabel(self.scroll_area, text="Κανένα προγραμματισμένο μάθημα.", text_color="gray").pack(
+                    anchor="w", padx=10)
+            else:
+                for sid, name, gname, rate, hours in scheduled_students:
+                    scheduled_ids.append(sid)
+                    cursor.execute("SELECT id, hours_done, notes FROM session_logs WHERE student_id=? AND date=?",
+                                   (sid, self.selected_date))
+                    exists = cursor.fetchone()
 
-        if not scheduled_students:
-            ctk.CTkLabel(self.scroll_area, text="Κανένα προγραμματισμένο μάθημα.", text_color="gray").pack(anchor="w",
-                                                                                                           padx=10)
-        else:
-            for sid, name, gname, rate, hours in scheduled_students:
-                scheduled_ids.append(sid)
-                cursor.execute("SELECT id, hours_done FROM session_logs WHERE student_id=? AND date=?",
-                               (sid, self.selected_date))
-                exists = cursor.fetchone()
+                    f = ctk.CTkFrame(self.scroll_area, fg_color="#2b323d", corner_radius=10)
+                    f.pack(fill="x", pady=5, ipady=5)
 
-                f = ctk.CTkFrame(self.scroll_area, fg_color="#2b323d", corner_radius=10)
-                f.pack(fill="x", pady=5, ipady=5)
+                    title = f"🎓 {name} {'[' + gname + ']' if gname else '[Ατομικό]'}"
+                    ctk.CTkLabel(f, text=title, font=("Arial", 15, "bold")).pack(side="left", padx=15)
 
-                title = f"🎓 {name} {'[' + gname + ']' if gname else '[Ατομικό]'}"
-                ctk.CTkLabel(f, text=title, font=("Arial", 15, "bold")).pack(side="left", padx=15)
+                    if exists:
+                        log_id, hours_logged, notes = exists
+                        ctk.CTkButton(f, text="↺ Αναίρεση", fg_color="#e74c3c", width=80,
+                                      command=lambda l=log_id: self.delete_log(l)).pack(side="right", padx=15)
+                        ctk.CTkLabel(f, text=f"✔️ {hours_logged}h", text_color="#2ecc71",
+                                     font=("Arial", 14, "bold")).pack(side="right", padx=10)
+                        if notes:
+                            ctk.CTkLabel(f, text=f"📝 {notes}", font=("Arial", 12, "italic"), text_color="gray").pack(
+                                side="left", padx=10)
+                    else:
+                        e_h = ctk.CTkEntry(f, width=50)
+                        e_h.insert(0, str(hours))
 
-                if exists:
-                    log_id, hours_logged = exists
-                    ctk.CTkButton(f, text="↺ Αναίρεση", fg_color="#e74c3c", width=80,
-                                  command=lambda l=log_id: self.delete_log(l)).pack(side="right", padx=15)
-                    ctk.CTkLabel(f, text=f"✔️ {hours_logged}h", text_color="#2ecc71", font=("Arial", 14, "bold")).pack(
-                        side="right", padx=10)
-                else:
-                    e_h = ctk.CTkEntry(f, width=50)
-                    e_h.insert(0, str(hours))
+                        e_notes = ctk.CTkEntry(f, width=150, placeholder_text="Σημειώσεις (προαιρετικά)")
 
-                    btn = ctk.CTkButton(f, text="Επιβεβαίωση", fg_color="#27ae60", width=100,
-                                        command=lambda s=sid, r=rate, e=e_h: self.save_lesson(s, r, e))
-                    btn.pack(side="right", padx=15)
-                    e_h.pack(side="right", padx=5)
-                    ctk.CTkLabel(f, text="Ώρες:").pack(side="right")
+                        btn = ctk.CTkButton(f, text="Επιβεβαίωση", fg_color="#27ae60", width=100,
+                                            command=lambda s=sid, r=rate, e=e_h, n=e_notes: self.save_lesson(s, r, e,
+                                                                                                             n))
+                        btn.pack(side="right", padx=15)
+                        e_h.pack(side="right", padx=5)
+                        ctk.CTkLabel(f, text="Ώρες:").pack(side="right")
+                        e_notes.pack(side="right", padx=15)
 
-        cursor.execute('''SELECT l.id, s.name, s.group_name, l.hours_done, s.id 
-                          FROM session_logs l JOIN students s ON l.student_id = s.id 
-                          WHERE l.date = ?''', (self.selected_date,))
-        all_logs_today = cursor.fetchall()
-        conn.close()
+            cursor.execute('''SELECT l.id, s.name, s.group_name, l.hours_done, s.id 
+                              FROM session_logs l JOIN students s ON l.student_id = s.id 
+                              WHERE l.date = ?''', (self.selected_date,))
+            all_logs_today = cursor.fetchall()
 
         extra_logs = [log for log in all_logs_today if log[4] not in scheduled_ids]
 
@@ -358,11 +419,10 @@ class TutorApp(ctk.CTk):
 
         ctk.CTkLabel(self.frame_quick_add, text="Προσθήκη Εκτάκτου Μαθήματος:", text_color="gray").pack(pady=(0, 5))
 
-        conn = sqlite3.connect("tutor_manager.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name, group_name, rate_per_hour FROM students")
-        all_students = cursor.fetchall()
-        conn.close()
+        with sqlite3.connect("tutor_manager.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, group_name, rate_per_hour FROM students")
+            all_students = cursor.fetchall()
 
         if all_students:
             self.student_options = {f"{s[1]} ({s[2] if s[2] else 'Ατομικό'})": s for s in all_students}
@@ -373,18 +433,23 @@ class TutorApp(ctk.CTk):
             self.student_dropdown.pack(side="left", padx=5)
             self.entry_quick_hours = ctk.CTkEntry(dd_frame, width=50, placeholder_text="Ώρες")
             self.entry_quick_hours.pack(side="left", padx=5)
+
+            self.entry_quick_notes = ctk.CTkEntry(dd_frame, width=150, placeholder_text="Σημειώσεις")
+            self.entry_quick_notes.pack(side="left", padx=5)
+
             ctk.CTkButton(dd_frame, text="➕", width=40, fg_color="#2980b9", command=self.add_extra_session).pack(
                 side="left", padx=5)
 
-    def save_lesson(self, sid, rate, entry_widget):
+    def save_lesson(self, sid, rate, entry_widget, notes_widget):
         try:
             hours = float(entry_widget.get())
-            conn = sqlite3.connect("tutor_manager.db")
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO session_logs (student_id, date, hours_done, earned_amount) VALUES (?,?,?,?)",
-                           (sid, self.selected_date, hours, hours * rate))
-            conn.commit()
-            conn.close()
+            notes = notes_widget.get().strip()
+            with sqlite3.connect("tutor_manager.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO session_logs (student_id, date, hours_done, earned_amount, notes) VALUES (?,?,?,?,?)",
+                    (sid, self.selected_date, hours, hours * rate, notes))
+                conn.commit()
             self.day_finalized = False
             self.refresh_day_lists()
             self.build_calendar_grid()
@@ -397,12 +462,13 @@ class TutorApp(ctk.CTk):
         sid, _, _, rate = s_data
         try:
             hours = float(self.entry_quick_hours.get())
-            conn = sqlite3.connect("tutor_manager.db")
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO session_logs (student_id, date, hours_done, earned_amount) VALUES (?,?,?,?)",
-                           (sid, self.selected_date, hours, hours * rate))
-            conn.commit()
-            conn.close()
+            notes = self.entry_quick_notes.get().strip()
+            with sqlite3.connect("tutor_manager.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO session_logs (student_id, date, hours_done, earned_amount, notes) VALUES (?,?,?,?,?)",
+                    (sid, self.selected_date, hours, hours * rate, notes))
+                conn.commit()
             self.day_finalized = False
             self.refresh_day_lists()
             self.build_calendar_grid()
@@ -410,95 +476,60 @@ class TutorApp(ctk.CTk):
             show_custom_alert(self, "Σφάλμα", "Εισάγετε αριθμό ωρών.", is_error=True)
 
     def delete_log(self, log_id):
-        conn = sqlite3.connect("tutor_manager.db")
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM session_logs WHERE id=?", (log_id,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect("tutor_manager.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM session_logs WHERE id=?", (log_id,))
+            conn.commit()
         self.day_finalized = False
         self.refresh_day_lists()
         self.build_calendar_grid()
 
-    # ==================== POP-UP ΚΛΕΙΣΙΜΑΤΟΣ ΗΜΕΡΑΣ ====================
-    def show_daily_summary(self, is_closing=False):
-        today_date = datetime.today().strftime('%Y-%m-%d')
+    # ==================== ΔΙΑΧΕΙΡΙΣΗ ΜΑΘΗΤΩΝ ====================
+    def show_manage_students_ui(self):
+        self.hide_all_frames()
+        self.manage_student_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        for w in self.manage_student_frame.winfo_children(): w.destroy()
 
-        conn = sqlite3.connect("tutor_manager.db")
-        cursor = conn.cursor()
-        cursor.execute('''SELECT s.name, s.group_name, l.hours_done 
-                          FROM session_logs l JOIN students s ON l.student_id = s.id 
-                          WHERE l.date = ?''', (today_date,))
-        completed = cursor.fetchall()
-        conn.close()
+        ctk.CTkLabel(self.manage_student_frame, text="Διαχείριση Ενεργών Μαθητών", font=("Arial", 22, "bold"),
+                     text_color="#0A84FF").pack(pady=20)
 
-        if not completed:
-            if is_closing:
-                self.destroy()
-            else:
-                show_custom_alert(self, "Πληροφορία", "Δεν υπάρχουν καθόλου καταχωρήσεις για τη σημερινή μέρα.")
+        with sqlite3.connect("tutor_manager.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, name, group_name, rate_per_hour FROM students ORDER BY group_name, name")
+            students = cursor.fetchall()
+
+        if not students:
+            ctk.CTkLabel(self.manage_student_frame, text="Δεν υπάρχουν καταχωρημένοι μαθητές.").pack()
             return
 
-        popup = ctk.CTkToplevel(self)
-        popup.title("Τελικός Έλεγχος Ημέρας")
-        popup.geometry("550x550")
-        popup.transient(self)
-        popup.grab_set()
+        for sid, name, gname, rate in students:
+            f = ctk.CTkFrame(self.manage_student_frame, fg_color="#2b323d", corner_radius=10)
+            f.pack(fill="x", pady=5, padx=20, ipady=10)
 
-        popup.update_idletasks()
-        x = self.winfo_x() + (self.winfo_width() // 2) - (550 // 2)
-        y = self.winfo_y() + (self.winfo_height() // 2) - (550 // 2)
-        popup.geometry(f"+{x}+{y}")
-
-        if is_closing:
-            ctk.CTkLabel(popup, text="⚠️ ΠΡΟΣΟΧΗ!", font=("Arial", 20, "bold"), text_color="#e74c3c").pack(pady=(20, 0))
-            ctk.CTkLabel(popup, text="Πας να κλείσεις το πρόγραμμα χωρίς να έχεις επιβεβαιώσει τη μέρα σου.",
-                         font=("Arial", 14)).pack(pady=5)
-        else:
-            ctk.CTkLabel(popup, text="📋 Σύνοψη Σημερινής Ημέρας", font=("Arial", 22, "bold"),
-                         text_color="#0A84FF").pack(pady=20)
-
-        scroll_popup = ctk.CTkScrollableFrame(popup, fg_color="#1f252e")
-        scroll_popup.pack(fill="both", expand=True, padx=20, pady=10)
-
-        for name, gname, hours in completed:
             g_text = f"[{gname}]" if gname else "[Ατομικό]"
-            row = ctk.CTkFrame(scroll_popup, fg_color="transparent")
-            row.pack(fill="x", pady=5)
-            ctk.CTkLabel(row, text=f"{name} {g_text}", font=("Arial", 15)).pack(side="left")
-            ctk.CTkLabel(row, text=f"{hours} ώρες", font=("Arial", 15, "bold"), text_color="#f1c40f").pack(side="right")
+            ctk.CTkLabel(f, text=f"👤 {name} {g_text}", font=("Arial", 16, "bold")).pack(side="left", padx=15)
+            ctk.CTkLabel(f, text=f"Χρέωση: {rate}€ / ώρα", text_color="#f1c40f", font=("Arial", 14)).pack(side="left",
+                                                                                                          padx=20)
 
-        btn_frame = ctk.CTkFrame(popup, fg_color="transparent")
-        btn_frame.pack(pady=20)
+            ctk.CTkButton(f, text="🗑️ Διαγραφή", fg_color="#c0392b", hover_color="#e74c3c", width=100,
+                          command=lambda s=sid: self.delete_student(s)).pack(side="right", padx=15)
 
-        ctk.CTkButton(btn_frame, text="🔙 Επιστροφή", fg_color="#7f8c8d", hover_color="#95a5a6", height=40,
-                      command=popup.destroy).pack(side="left", padx=10)
+    def delete_student(self, student_id):
+        try:
+            with sqlite3.connect("tutor_manager.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM schedule WHERE student_id=?", (student_id,))
+                cursor.execute("DELETE FROM session_logs WHERE student_id=?", (student_id,))
+                cursor.execute("DELETE FROM students WHERE id=?", (student_id,))
+                conn.commit()
 
-        ctk.CTkButton(btn_frame, text="✅ Οριστική Αποθήκευση", fg_color="#27ae60", hover_color="#219150", height=40,
-                      command=lambda: self.finalize_day(popup, is_closing)).pack(side="left", padx=10)
+            show_custom_alert(self, "Διαγραφή", "Ο μαθητής και τα δεδομένα του διαγράφηκαν επιτυχώς.")
+            self.show_manage_students_ui()
+            self.build_calendar_grid()
+        except Exception as e:
+            show_custom_alert(self, "Σφάλμα Διαγραφής", f"Υπήρξε πρόβλημα:\n{e}", is_error=True)
 
-    def finalize_day(self, popup, is_closing):
-        self.day_finalized = True
-        popup.destroy()
-        if is_closing:
-            self.destroy()
-        else:
-            show_custom_alert(self, "Μπράβο!", "Η σημερινή ημέρα επιβεβαιώθηκε και αποθηκεύτηκε επιτυχώς.")
-
-    def on_closing_app(self):
-        today_date = datetime.today().strftime('%Y-%m-%d')
-        conn = sqlite3.connect("tutor_manager.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM session_logs WHERE date=?", (today_date,))
-        logs_today = cursor.fetchone()[0]
-        conn.close()
-
-        if logs_today > 0 and not self.day_finalized:
-            self.show_daily_summary(is_closing=True)
-        else:
-            self.destroy()
-
-            # ==================== ΠΡΟΣΘΗΚΗ ΜΑΘΗΤΩΝ ====================
-
+    # ==================== ΠΡΟΣΘΗΚΗ ΜΑΘΗΤΩΝ ====================
     def setup_add_student_ui(self):
         card = ctk.CTkFrame(self.add_student_frame, corner_radius=15, fg_color="#232731")
         card.pack(pady=20, padx=40, fill="both", expand=True)
@@ -558,7 +589,6 @@ class TutorApp(ctk.CTk):
         rate = self.entry_rate.get()
         hours = self.entry_def_hours.get()
         sel_days = [d for d, v in self.days_dict.items() if v.get()]
-
         names = [e.get().strip() for e in self.student_entries if e.get().strip()]
 
         if not names or not rate or not sel_days:
@@ -566,20 +596,18 @@ class TutorApp(ctk.CTk):
             return
 
         try:
-            conn = sqlite3.connect("tutor_manager.db")
-            cursor = conn.cursor()
-            for n in names:
-                cursor.execute(
-                    "INSERT INTO students (name, group_name, rate_per_hour, hours_per_session) VALUES (?,?,?,?)",
-                    (n, group_name, float(rate), float(hours)))
-                sid = cursor.lastrowid
-                for day in sel_days:
-                    cursor.execute("INSERT INTO schedule (student_id, day_of_week) VALUES (?,?)", (sid, day))
-            conn.commit()
-            conn.close()
+            with sqlite3.connect("tutor_manager.db") as conn:
+                cursor = conn.cursor()
+                for n in names:
+                    cursor.execute(
+                        "INSERT INTO students (name, group_name, rate_per_hour, hours_per_session) VALUES (?,?,?,?)",
+                        (n, group_name, float(rate), float(hours)))
+                    sid = cursor.lastrowid
+                    for day in sel_days:
+                        cursor.execute("INSERT INTO schedule (student_id, day_of_week) VALUES (?,?)", (sid, day))
+                conn.commit()
 
             show_custom_alert(self, "Επιτυχία", "Οι καταχωρήσεις αποθηκεύτηκαν!")
-
             self.entry_group.delete(0, 'end')
             self.entry_rate.delete(0, 'end')
             self.entry_def_hours.delete(0, 'end')
@@ -593,16 +621,90 @@ class TutorApp(ctk.CTk):
         self.hide_all_frames()
         self.add_student_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
 
+    # ==================== POP-UP ΚΛΕΙΣΙΜΑΤΟΣ ΗΜΕΡΑΣ ====================
+    def show_daily_summary(self, is_closing=False):
+        today_date = datetime.today().strftime('%Y-%m-%d')
+
+        with sqlite3.connect("tutor_manager.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute('''SELECT s.name, s.group_name, l.hours_done 
+                              FROM session_logs l JOIN students s ON l.student_id = s.id 
+                              WHERE l.date = ?''', (today_date,))
+            completed = cursor.fetchall()
+
+        if not completed:
+            if is_closing:
+                self.destroy()
+            else:
+                show_custom_alert(self, "Πληροφορία", "Δεν υπάρχουν καθόλου καταχωρήσεις για τη σημερινή μέρα.")
+            return
+
+        popup = ctk.CTkToplevel(self)
+        popup.title("Τελικός Έλεγχος Ημέρας")
+        popup.geometry("550x550")
+        popup.transient(self)
+        popup.grab_set()
+
+        popup.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (550 // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (550 // 2)
+        popup.geometry(f"+{x}+{y}")
+
+        if is_closing:
+            ctk.CTkLabel(popup, text="⚠️ ΠΡΟΣΟΧΗ!", font=("Arial", 20, "bold"), text_color="#e74c3c").pack(pady=(20, 0))
+            ctk.CTkLabel(popup, text="Πας να κλείσεις το πρόγραμμα χωρίς να έχεις επιβεβαιώσει τη μέρα σου.",
+                         font=("Arial", 14)).pack(pady=5)
+        else:
+            ctk.CTkLabel(popup, text="📋 Σύνοψη Σημερινής Ημέρας", font=("Arial", 22, "bold"),
+                         text_color="#0A84FF").pack(pady=20)
+
+        scroll_popup = ctk.CTkScrollableFrame(popup, fg_color="#1f252e")
+        scroll_popup.pack(fill="both", expand=True, padx=20, pady=10)
+
+        for name, gname, hours in completed:
+            g_text = f"[{gname}]" if gname else "[Ατομικό]"
+            row = ctk.CTkFrame(scroll_popup, fg_color="transparent")
+            row.pack(fill="x", pady=5)
+            ctk.CTkLabel(row, text=f"{name} {g_text}", font=("Arial", 15)).pack(side="left")
+            ctk.CTkLabel(row, text=f"{hours} ώρες", font=("Arial", 15, "bold"), text_color="#f1c40f").pack(side="right")
+
+        btn_frame = ctk.CTkFrame(popup, fg_color="transparent")
+        btn_frame.pack(pady=20)
+
+        ctk.CTkButton(btn_frame, text="🔙 Επιστροφή", fg_color="#7f8c8d", hover_color="#95a5a6", height=40,
+                      command=popup.destroy).pack(side="left", padx=10)
+        ctk.CTkButton(btn_frame, text="✅ Οριστική Αποθήκευση", fg_color="#27ae60", hover_color="#219150", height=40,
+                      command=lambda: self.finalize_day(popup, is_closing)).pack(side="left", padx=10)
+
+    def finalize_day(self, popup, is_closing):
+        self.day_finalized = True
+        popup.destroy()
+        if is_closing:
+            self.destroy()
+        else:
+            show_custom_alert(self, "Μπράβο!", "Η σημερινή ημέρα επιβεβαιώθηκε και αποθηκεύτηκε επιτυχώς.")
+
+    def on_closing_app(self):
+        today_date = datetime.today().strftime('%Y-%m-%d')
+        with sqlite3.connect("tutor_manager.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM session_logs WHERE date=?", (today_date,))
+            logs_today = cursor.fetchone()[0]
+
+        if logs_today > 0 and not self.day_finalized:
+            self.show_daily_summary(is_closing=True)
+        else:
+            self.destroy()
+
     # ==================== EXCEL EXPORT ====================
     def export_excel(self):
-        conn = sqlite3.connect("tutor_manager.db")
-        query = '''SELECT s.name AS 'Μαθητής', IFNULL(s.group_name, 'Ατομικό') AS 'Γκρουπ',
-                   strftime('%Y-%m', l.date) AS 'Μήνας', SUM(l.hours_done) AS 'Σύνολο Ωρών', 
-                   SUM(l.earned_amount) AS 'Οφειλόμενο Ποσό'
-                   FROM session_logs l JOIN students s ON l.student_id = s.id 
-                   GROUP BY s.id, strftime('%Y-%m', l.date) ORDER BY 'Μήνας' DESC, 'Γκρουπ', 'Μαθητής' '''
-        df = pd.read_sql_query(query, conn)
-        conn.close()
+        with sqlite3.connect("tutor_manager.db") as conn:
+            query = '''SELECT s.name AS 'Μαθητής', IFNULL(s.group_name, 'Ατομικό') AS 'Γκρουπ',
+                       strftime('%Y-%m', l.date) AS 'Μήνας', SUM(l.hours_done) AS 'Σύνολο Ωρών', 
+                       SUM(l.earned_amount) AS 'Οφειλόμενο Ποσό'
+                       FROM session_logs l JOIN students s ON l.student_id = s.id 
+                       GROUP BY s.id, strftime('%Y-%m', l.date) ORDER BY 'Μήνας' DESC, 'Γκρουπ', 'Μαθητής' '''
+            df = pd.read_sql_query(query, conn)
 
         if df.empty:
             show_custom_alert(self, "Άδειο", "Δεν υπάρχουν δεδομένα μαθημάτων για εξαγωγή.", is_error=True)
